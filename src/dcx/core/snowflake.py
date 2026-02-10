@@ -1,5 +1,7 @@
 """Shared Snowflake connection utilities."""
 
+from pathlib import Path
+
 import snowflake.connector
 
 
@@ -25,7 +27,8 @@ def get_snowflake_connection(config: dict):
         from cryptography.hazmat.backends import default_backend
         from cryptography.hazmat.primitives import serialization
 
-        with open(config["private_key_path"], "rb") as key_file:
+        key_path = Path(config["private_key_path"]).expanduser()
+        with open(key_path, "rb") as key_file:
             private_key = serialization.load_pem_private_key(
                 key_file.read(),
                 password=None,

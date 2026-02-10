@@ -80,7 +80,8 @@ class FileLoader:
                 from cryptography.hazmat.backends import default_backend
                 from cryptography.hazmat.primitives import serialization
 
-                with open(self.connection["private_key_path"], "rb") as key_file:
+                key_path = Path(self.connection["private_key_path"]).expanduser()
+                with open(key_path, "rb") as key_file:
                     private_key = serialization.load_pem_private_key(
                         key_file.read(),
                         password=None,
@@ -378,9 +379,9 @@ class FileLoader:
 
     def _load_file(self, file_path: Path, file_name: str) -> int:
         """Load a single file into Snowflake. Returns row count."""
-        # Upload file to stage
+        # Upload file to stage (use as_posix() for Windows compatibility)
         self._execute(
-            f"PUT file://{file_path} @{self._stage_name} AUTO_COMPRESS=TRUE OVERWRITE=TRUE"
+            f"PUT 'file://{file_path.as_posix()}' @{self._stage_name} AUTO_COMPRESS=TRUE OVERWRITE=TRUE"
         )
 
         # Detect format
