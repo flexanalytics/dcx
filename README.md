@@ -106,6 +106,7 @@ dcx load <source> [options]
 | `--create-schema` | | Create schema if not exists (skips prompt) | false |
 | `--grant` | `-g` | Grant SELECT to role (repeatable) | - |
 | `--most-recent` | | Track most recent load with boolean column | false |
+| `--single-column` | | Store CSV as single JSON column instead of expanding | false |
 | `--audit` | | Log load to _dcx_load_history table | false |
 | `--dry-run` | | Show what would be done without executing | false |
 
@@ -124,9 +125,13 @@ dcx load <source> [options]
 | Format | Behavior |
 |--------|----------|
 | `auto` | Detect from extension (.csv, .tsv, or single-column) |
-| `single-column` | Each line stored as a single value |
-| `csv` | Comma-delimited, header row parsed, stored as JSON object |
-| `tsv` | Tab-delimited, header row parsed, stored as JSON object |
+| `single-column` | Each line stored as a single VARIANT value |
+| `csv` | Comma-delimited, creates one column per CSV field |
+| `tsv` | Tab-delimited, creates one column per TSV field |
+
+**CSV Column Handling:**
+
+By default, CSV/TSV files create separate table columns from the header row. Use `--single-column` to store as a JSON object in a single VARIANT column instead.
 
 **Examples:**
 
@@ -362,39 +367,53 @@ dcx load ./CENSUS_2258.zip --profile ucop-census --tag term_code=2258
 
 ## Table Schema
 
-When using `--create-table`, dcx creates:
+When using `--create-table`, dcx creates a table based on file format:
 
+**For CSV/TSV files (default):**
 ```sql
 CREATE TABLE IF NOT EXISTS <dest> (
     _source_file     VARCHAR,                                    -- Original filename
     _load_timestamp  TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),  -- When loaded
     is_most_recent   BOOLEAN DEFAULT TRUE,                       -- If --most-recent
     <tag_name>       VARCHAR,                                    -- One per --tag
-    data             VARIANT                                     -- File content
+    "<CSV Column 1>" VARCHAR,                                    -- From CSV header
+    "<CSV Column 2>" VARCHAR,
+    ...
 );
 ```
 
-**Data Column Format:**
-
-| File Format | Data Column Content |
-|-------------|---------------------|
-| Single-column (.txt, etc.) | Each line as a string |
-| CSV | JSON object with column names from header |
-| TSV | JSON object with column names from header |
+**For single-column files (or with `--single-column`):**
+```sql
+CREATE TABLE IF NOT EXISTS <dest> (
+    _source_file     VARCHAR,
+    _load_timestamp  TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    is_most_recent   BOOLEAN DEFAULT TRUE,                       -- If --most-recent
+    <tag_name>       VARCHAR,                                    -- One per --tag
+    data             VARIANT                                     -- Each line as string/JSON
+);
+```
 
 **Querying CSV/TSV Data:**
 
 ```sql
--- Access fields with dot notation
+-- CSV columns are created directly in the table
 SELECT
-    data:STUDENT_ID::VARCHAR AS student_id,
-    data:FIRST_NAME::VARCHAR AS first_name,
-    data:EMAIL::VARCHAR AS email
+    "STUDENT_ID",
+    "FIRST_NAME",
+    "EMAIL"
 FROM my_table;
 
--- Filter on nested fields
+-- Column names preserve original casing from CSV header
 SELECT * FROM my_table
-WHERE data:STATUS::VARCHAR = 'ACTIVE';
+WHERE "STATUS" = 'ACTIVE';
+```
+
+**Querying single-column data (with `--single-column`):**
+
+```sql
+-- Access JSON fields with dot notation
+SELECT data:STUDENT_ID::VARCHAR AS student_id
+FROM my_table;
 ```
 
 ---

@@ -86,6 +86,10 @@ def load(
         bool,
         typer.Option("--most-recent", help="Track most recent load with boolean column"),
     ] = False,
+    single_column: Annotated[
+        bool,
+        typer.Option("--single-column", help="Store CSV as single JSON column instead of expanding"),
+    ] = False,
     audit: Annotated[
         bool,
         typer.Option("--audit", help="Log load to _dcx_load_history table"),
@@ -204,6 +208,7 @@ def load(
         grants=final_grants,
         track_most_recent=final_most_recent,
         skip_header=skip_header,
+        expand_columns=not single_column,
         audit=audit,
     )
 
@@ -227,6 +232,7 @@ def load(
                 grants=final_grants,
                 track_most_recent=final_most_recent,
                 skip_header=skip_header,
+                expand_columns=not single_column,
                 audit=audit,
             )
             result = loader.load(source)

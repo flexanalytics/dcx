@@ -40,6 +40,7 @@ class FileLoader:
         grants: list[str] | None = None,
         track_most_recent: bool = False,
         skip_header: int = 0,
+        expand_columns: bool = False,
         audit: bool = False,
     ):
         self.connection = connection
@@ -52,10 +53,12 @@ class FileLoader:
         self.grants = grants or []
         self.track_most_recent = track_most_recent
         self.skip_header = skip_header
+        self.expand_columns = expand_columns
         self.audit = audit
         self._conn = None
         self._temp_dir = None
         self._stage_name = f"dcx_stage_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+        self._csv_columns: list[str] | None = None  # Cached CSV column names
 
     def _get_conn(self):
         """Get or create Snowflake connection."""
@@ -128,6 +131,22 @@ class FileLoader:
                 raise ValueError(f"No files found in {source}")
 
             console.print(f"Found {len(files)} file(s) to load")
+
+            # If expand_columns, detect columns from first file
+            if self.expand_columns and files:
+                first_file, _ = files[0]
+                detected_format = self._detect_format(first_file)
+                if detected_format in ("csv", "tsv"):
+                    delimiter = "," if detected_format == "csv" else "\t"
+                    self._csv_columns = self._get_csv_headers(first_file, delimiter)
+                    if self._csv_columns:
+                        console.print(f"[dim]Detected {len(self._csv_columns)} columns from CSV header[/dim]")
+                    else:
+                        console.print("[yellow]Warning: No columns detected, falling back to single data column[/yellow]")
+                        self.expand_columns = False
+                else:
+                    console.print("[yellow]Warning: --expand-columns only works with CSV/TSV files[/yellow]")
+                    self.expand_columns = False
 
             # Create table if needed (outside transaction - DDL auto-commits)
             if self.create_table:
@@ -265,8 +284,14 @@ class FileLoader:
         for tag_name in self.tags.keys():
             columns.append(f"{tag_name} VARCHAR")
 
-        # Add data column (VARIANT for flexible storage - single values or JSON objects)
-        columns.append("data VARIANT")
+        # Add data columns - either expanded CSV columns or single VARIANT
+        if self.expand_columns and self._csv_columns:
+            # Create one VARCHAR column per CSV column (quote identifiers for special chars)
+            for col_name in self._csv_columns:
+                columns.append(f'"{col_name}" VARCHAR')
+        else:
+            # Single VARIANT column for flexible storage
+            columns.append("data VARIANT")
 
         sql = f"""
         CREATE TABLE IF NOT EXISTS {self.dest_table} (
@@ -400,13 +425,12 @@ class FileLoader:
             columns.append(tag_name)
             values.append(f"'{tag_value}'")
 
-        columns.append("data")
-
         # COPY INTO from stage
         staged_file = f"@{self._stage_name}/{file_path.name}"
 
         if detected_format == "single-column":
             # Single column mode: each line is one value (wrap in TO_VARIANT to store as string)
+            columns.append("data")
             values.append("TO_VARIANT($1)")
             file_format = f"""
             FILE_FORMAT = (
@@ -417,8 +441,27 @@ class FileLoader:
                 ESCAPE_UNENCLOSED_FIELD = NONE
             )
             """
+        elif self.expand_columns and self._csv_columns:
+            # Expanded columns mode: one column per CSV field
+            delimiter = "," if detected_format == "csv" else "\\t"
+            skip_header = max(1, self.skip_header)
+
+            for i, col_name in enumerate(self._csv_columns, 1):
+                columns.append(f'"{col_name}"')
+                values.append(f"${i}")
+
+            file_format = f"""
+            FILE_FORMAT = (
+                TYPE = CSV
+                FIELD_DELIMITER = '{delimiter}'
+                SKIP_HEADER = {skip_header}
+                FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+                ESCAPE_UNENCLOSED_FIELD = NONE
+            )
+            """
         else:
-            # CSV/TSV mode: parse into JSON object
+            # CSV/TSV mode: parse into JSON object in single VARIANT column
+            columns.append("data")
             delimiter = "," if detected_format == "csv" else "\\t"
             skip_header = max(1, self.skip_header)  # Always skip at least the header row
 
