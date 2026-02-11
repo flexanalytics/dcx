@@ -406,8 +406,8 @@ class FileLoader:
         staged_file = f"@{self._stage_name}/{file_path.name}"
 
         if detected_format == "single-column":
-            # Single column mode: each line is one value
-            values.append("$1")
+            # Single column mode: each line is one value (wrap in TO_VARIANT to store as string)
+            values.append("TO_VARIANT($1)")
             file_format = f"""
             FILE_FORMAT = (
                 TYPE = CSV
