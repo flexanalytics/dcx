@@ -7,6 +7,7 @@ from typing import Annotated, Optional
 import typer
 from rich.console import Console
 
+from dcx.commands.config import get_dbt_project_profile
 from dcx.core.loader import FileLoader, SchemaNotFoundError
 from dcx.core.settings import get_connection, get_profile
 
@@ -149,14 +150,39 @@ def load(
 
     # Get connection
     conn_config = get_connection(final_connection)
+    conn_display = final_connection or "default"
+
+    # If no configured connection, try dbt_project.yml
     if not conn_config:
-        console.print("[red]No connection configured. Run: dcx config add[/red]")
-        raise typer.Exit(1)
+        dbt_project = get_dbt_project_profile()
+        if dbt_project:
+            profile_name, target_name, dbt_config = dbt_project
+            console.print(f"\n[cyan]Found dbt_project.yml using profile '{profile_name}' (target: {target_name})[/cyan]")
+            console.print(f"[dim]  account: {dbt_config.get('account')}[/dim]")
+            console.print(f"[dim]  database: {dbt_config.get('database')}[/dim]")
+            console.print(f"[dim]  warehouse: {dbt_config.get('warehouse')}[/dim]")
+            if not typer.confirm("\nUse this connection?", default=True):
+                console.print("[yellow]Aborted. Configure a connection with: dcx config add[/yellow]")
+                raise typer.Exit(1)
+            conn_config = dbt_config
+            conn_display = f"dbt:{profile_name}.{target_name}"
+        else:
+            console.print("[red]No connection configured. Run: dcx config add[/red]")
+            raise typer.Exit(1)
+
+    # Build full table path for display
+    db = conn_config.get("database", "")
+    schema = conn_config.get("schema", "")
+    # If dest already has schema prefix, use as-is; otherwise build full path
+    if "." in final_dest:
+        full_dest = f"{db}.{final_dest}" if db else final_dest
+    else:
+        full_dest = ".".join(filter(None, [db, schema, final_dest]))
 
     # Show plan
     console.print(f"\n[bold]Source:[/bold] {source}")
-    console.print(f"[bold]Destination:[/bold] {final_dest}")
-    console.print(f"[bold]Connection:[/bold] {conn_config.get('account', 'default')}")
+    console.print(f"[bold]Destination:[/bold] {full_dest}")
+    console.print(f"[bold]Connection:[/bold] {conn_display} ({conn_config.get('account')})")
     console.print(f"[bold]Strategy:[/bold] {final_strategy.value}")
     if tags:
         console.print(f"[bold]Tags:[/bold] {tags}")

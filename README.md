@@ -294,6 +294,26 @@ Save this configuration? [Y/n]: y
 Added connection: prod
 ```
 
+**dbt Project Auto-Detection:**
+
+When running `dcx load` without a configured connection, dcx checks for `dbt_project.yml` in the current directory. If found, it reads the profile name and looks up the matching connection from `~/.dbt/profiles.yml`:
+
+```
+$ dcx load ./data.zip --dest my_table
+
+Found dbt_project.yml using profile 'my_project' (target: dev)
+  account: abc12345.us-east-1
+  database: ANALYTICS
+  warehouse: TRANSFORM_WH
+
+Use this connection? [Y/n]: y
+
+Source: ./data.zip
+Destination: ANALYTICS.RAW.my_table
+Connection: dbt:my_project.dev (abc12345.us-east-1)
+...
+```
+
 ---
 
 ### `dcx config profile`

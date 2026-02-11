@@ -53,6 +53,49 @@ def _load_dbt_profiles() -> dict | None:
         return yaml.safe_load(f)
 
 
+def get_dbt_project_profile() -> tuple[str, str, dict] | None:
+    """
+    Check for dbt_project.yml in current directory and return matching profile config.
+    Returns (profile_name, target_name, config) or None if not found.
+    """
+    # Check for dbt_project.yml or dbt_project.yaml
+    project_file = None
+    for name in ["dbt_project.yml", "dbt_project.yaml"]:
+        path = Path.cwd() / name
+        if path.exists():
+            project_file = path
+            break
+
+    if not project_file:
+        return None
+
+    # Read project file to get profile name
+    with open(project_file) as f:
+        project = yaml.safe_load(f)
+
+    profile_name = project.get("profile")
+    if not profile_name:
+        return None
+
+    # Load dbt profiles and find matching profile
+    profiles = _load_dbt_profiles()
+    if not profiles or profile_name not in profiles:
+        return None
+
+    profile = profiles[profile_name]
+    if not isinstance(profile, dict) or "outputs" not in profile:
+        return None
+
+    # Get default target or first available
+    target_name = profile.get("target", list(profile["outputs"].keys())[0])
+    target_config = profile["outputs"].get(target_name)
+
+    if not target_config or target_config.get("type") != "snowflake":
+        return None
+
+    return (profile_name, target_name, _dbt_config_to_dcx(target_config))
+
+
 def _get_dbt_snowflake_targets(profiles: dict) -> list[tuple[str, str, dict]]:
     """
     Extract Snowflake targets from dbt profiles.
