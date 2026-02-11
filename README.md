@@ -16,16 +16,22 @@ A command-line tool for loading files into Snowflake with metadata tagging, form
 
 ## Installation
 
+**Option 1: pip (recommended)**
 ```bash
-# Clone the repository
+pip install git+https://github.com/flexanalytics/dcx.git
+```
+
+**Option 2: pipx (isolated environment)**
+```bash
+# Install pipx first if needed: pip install pipx
+pipx install git+https://github.com/flexanalytics/dcx.git
+```
+
+**Option 3: Development install**
+```bash
 git clone https://github.com/flexanalytics/dcx.git
 cd dcx
-
-# Install in development mode
 pip install -e .
-
-# Or with pipx (recommended for CLI tools)
-pipx install .
 ```
 
 ## Quick Start
