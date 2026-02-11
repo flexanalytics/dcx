@@ -17,7 +17,8 @@ console = Console()
 class Strategy(str, Enum):
     overwrite = "overwrite"  # Delete matching tags, then insert
     append = "append"  # Just insert (keep history)
-    replace = "replace"  # Truncate table, then insert
+    truncate = "truncate"  # Truncate table, then insert (fast, keeps structure)
+    replace = "replace"  # Drop and recreate table (allows schema changes)
 
 
 class Format(str, Enum):
@@ -38,7 +39,7 @@ def load(
     ],
     dest: Annotated[
         Optional[str],
-        typer.Option("--dest", "-d", help="Destination table (schema.table or just table)"),
+        typer.Option("--dest", "-d", help="Destination table name (database/schema come from connection)"),
     ] = None,
     profile: Annotated[
         Optional[str],
@@ -89,6 +90,10 @@ def load(
     single_column: Annotated[
         bool,
         typer.Option("--single-column", help="Store CSV as single JSON column instead of expanding"),
+    ] = False,
+    sanitize: Annotated[
+        bool,
+        typer.Option("--sanitize", help="Sanitize column names (spaces→underscores, uppercase)"),
     ] = False,
     audit: Annotated[
         bool,
@@ -152,12 +157,19 @@ def load(
             key, value = t.split("=", 1)
             tags[key] = value
 
-    # Get connection
-    conn_config = get_connection(final_connection)
-    conn_display = final_connection or "default"
+    # Get connection - prioritize dbt_project.yml if no explicit --connection
+    conn_config = None
+    conn_display = "default"
 
-    # If no configured connection, try dbt_project.yml
-    if not conn_config:
+    if final_connection:
+        # Explicit --connection provided
+        conn_config = get_connection(final_connection)
+        conn_display = final_connection
+        if not conn_config:
+            console.print(f"[red]Connection '{final_connection}' not found. Run: dcx config list[/red]")
+            raise typer.Exit(1)
+    else:
+        # No explicit connection - check for dbt_project.yml first
         dbt_project = get_dbt_project_profile()
         if dbt_project:
             profile_name, target_name, dbt_config = dbt_project
@@ -166,22 +178,101 @@ def load(
             console.print(f"[dim]  database: {dbt_config.get('database')}[/dim]")
             console.print(f"[dim]  warehouse: {dbt_config.get('warehouse')}[/dim]")
             if not typer.confirm("\nUse this connection?", default=True):
-                console.print("[yellow]Aborted. Configure a connection with: dcx config add[/yellow]")
-                raise typer.Exit(1)
-            conn_config = dbt_config
-            conn_display = f"dbt:{profile_name}.{target_name}"
-        else:
-            console.print("[red]No connection configured. Run: dcx config add[/red]")
-            raise typer.Exit(1)
+                # Offer to use a different connection
+                from dcx.core.settings import load_config
+                config = load_config()
+                connections = list(config.get("connections", {}).keys())
 
-    # Build full table path for display
-    db = conn_config.get("database", "")
-    schema = conn_config.get("schema", "")
-    # If dest already has schema prefix, use as-is; otherwise build full path
-    if "." in final_dest:
-        full_dest = f"{db}.{final_dest}" if db else final_dest
+                console.print("\n[bold]Available connections:[/bold]")
+                connections_config = config.get("connections", {})
+                for i, name in enumerate(connections, 1):
+                    conn = connections_config.get(name, {})
+                    account = conn.get("account", "?")
+                    database = conn.get("database", "?")
+                    schema = conn.get("schema", "?")
+                    console.print(f"  {i}. [cyan]{name}[/cyan]")
+                    console.print(f"     {account} → {database}.{schema}")
+                console.print(f"  {len(connections) + 1}. [green]Create new connection[/green]")
+                console.print(f"  {len(connections) + 2}. [yellow]Cancel[/yellow]")
+
+                choice = typer.prompt("\nSelect", type=int, default=len(connections) + 2)
+
+                if choice == len(connections) + 1:
+                    # Create new connection inline
+                    from dcx.commands.config import add as config_add
+                    conn_name = typer.prompt("\nConnection name")
+                    config_add(name=conn_name)
+                    conn_config = get_connection(conn_name)
+                    conn_display = conn_name
+                elif choice < 1 or choice > len(connections):
+                    console.print("[yellow]Aborted.[/yellow]")
+                    raise typer.Exit(1)
+                else:
+                    conn_name = connections[choice - 1]
+                    conn_config = get_connection(conn_name)
+                    conn_display = conn_name
+            else:
+                conn_config = dbt_config
+                conn_display = f"dbt:{profile_name}.{target_name}"
+
+        if not conn_config:
+            # Fall back to default connection
+            conn_config = get_connection(None)
+            if not conn_config:
+                console.print("[red]No connection configured. Run: dcx config add[/red]")
+                raise typer.Exit(1)
+
+    # Parse destination - connection provides defaults, but dest can override
+    conn_db = conn_config.get("database", "")
+    conn_schema = conn_config.get("schema", "")
+
+    dest_parts = final_dest.split(".")
+    if len(dest_parts) == 1:
+        # Just table name - use connection's db/schema
+        table_name = final_dest
+        db = conn_db
+        schema = conn_schema
+    elif len(dest_parts) == 2:
+        # schema.table - confirm override
+        dest_schema, table_name = dest_parts
+        if dest_schema.upper() != conn_schema.upper():
+            console.print(f"\n[yellow]Destination specifies schema '{dest_schema}' but connection uses '{conn_schema}'[/yellow]")
+            if typer.confirm(f"Use schema '{dest_schema}' instead?", default=True):
+                schema = dest_schema
+            else:
+                schema = conn_schema
+        else:
+            schema = dest_schema
+        db = conn_db
     else:
-        full_dest = ".".join(filter(None, [db, schema, final_dest]))
+        # db.schema.table - confirm override
+        dest_db = dest_parts[0]
+        dest_schema = dest_parts[-2]
+        table_name = dest_parts[-1]
+
+        overrides = []
+        if dest_db.upper() != conn_db.upper():
+            overrides.append(f"database '{dest_db}' (connection: '{conn_db}')")
+        if dest_schema.upper() != conn_schema.upper():
+            overrides.append(f"schema '{dest_schema}' (connection: '{conn_schema}')")
+
+        if overrides:
+            console.print(f"\n[yellow]Destination specifies: {', '.join(overrides)}[/yellow]")
+            if typer.confirm("Use destination's database/schema?", default=True):
+                db = dest_db
+                schema = dest_schema
+            else:
+                db = conn_db
+                schema = conn_schema
+        else:
+            db = dest_db
+            schema = dest_schema
+
+    # Build full path for display
+    full_dest = ".".join(filter(None, [db, schema, table_name]))
+
+    # Update connection config with resolved db/schema (may have been overridden by dest)
+    conn_config = {**conn_config, "database": db, "schema": schema}
 
     # Show plan
     console.print(f"\n[bold]Source:[/bold] {source}")
@@ -199,7 +290,7 @@ def load(
     # Execute load
     loader = FileLoader(
         connection=conn_config,
-        dest_table=final_dest,
+        dest_table=table_name,
         tags=tags,
         strategy=final_strategy.value,
         file_format=format.value,
@@ -210,6 +301,7 @@ def load(
         skip_header=skip_header,
         expand_columns=not single_column,
         audit=audit,
+        sanitize_columns=sanitize,
     )
 
     try:
@@ -223,7 +315,7 @@ def load(
             # Retry with create_schema=True
             loader = FileLoader(
                 connection=conn_config,
-                dest_table=final_dest,
+                dest_table=table_name,
                 tags=tags,
                 strategy=final_strategy.value,
                 file_format=format.value,
@@ -234,6 +326,7 @@ def load(
                 skip_header=skip_header,
                 expand_columns=not single_column,
                 audit=audit,
+                sanitize_columns=sanitize,
             )
             result = loader.load(source)
             console.print(f"\n[green]Loaded {result['rows']:,} rows from {result['files']} file(s)[/green]")

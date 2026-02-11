@@ -42,6 +42,7 @@ class FileLoader:
         skip_header: int = 0,
         expand_columns: bool = False,
         audit: bool = False,
+        sanitize_columns: bool = False,
     ):
         self.connection = connection
         self.dest_table = dest_table
@@ -55,6 +56,7 @@ class FileLoader:
         self.skip_header = skip_header
         self.expand_columns = expand_columns
         self.audit = audit
+        self.sanitize_columns = sanitize_columns
         self._conn = None
         self._temp_dir = None
         self._stage_name = f"dcx_stage_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
@@ -148,8 +150,12 @@ class FileLoader:
                     console.print("[yellow]Warning: --expand-columns only works with CSV/TSV files[/yellow]")
                     self.expand_columns = False
 
+            # Handle replace strategy - drop table first (DDL auto-commits)
+            if self.strategy == "replace":
+                self._drop_table_if_exists()
+
             # Create table if needed (outside transaction - DDL auto-commits)
-            if self.create_table:
+            if self.create_table or self.strategy == "replace":
                 self._ensure_table_exists()
 
             # Create audit table if auditing enabled
@@ -165,7 +171,7 @@ class FileLoader:
             try:
                 # Handle strategy
                 deleted = 0
-                if self.strategy == "replace":
+                if self.strategy == "truncate":
                     deleted = self._truncate_table()
                 elif self.strategy == "overwrite" and self.tags:
                     deleted = self._delete_matching_tags()
@@ -310,6 +316,16 @@ class FileLoader:
             except Exception:
                 pass  # Column might already exist
 
+    def _drop_table_if_exists(self) -> None:
+        """Drop table if it exists (for replace strategy)."""
+        try:
+            cursor = self._execute(f"SELECT COUNT(*) FROM {self.dest_table}")
+            count = cursor.fetchone()[0]
+            self._execute(f"DROP TABLE {self.dest_table}")
+            console.print(f"[dim]Dropped table ({count:,} rows)[/dim]")
+        except Exception:
+            pass  # Table doesn't exist, nothing to drop
+
     def _truncate_table(self) -> int:
         """Truncate table. Returns count of deleted rows."""
         cursor = self._execute(f"SELECT COUNT(*) FROM {self.dest_table}")
@@ -390,13 +406,21 @@ class FileLoader:
             # Parse header respecting quotes
             reader = csv.reader([first_line], delimiter=delimiter)
             headers = next(reader)
-            # Sanitize column names for Snowflake
-            return [self._sanitize_column_name(h) for h in headers]
+            # Sanitize column names only if requested
+            if self.sanitize_columns:
+                return [self._sanitize_column_name(h) for h in headers]
+            else:
+                # Keep original names (will be quoted in SQL)
+                return [h.strip() for h in headers]
 
     def _sanitize_column_name(self, name: str) -> str:
         """Sanitize column name for Snowflake."""
         # Replace non-alphanumeric with underscore
         sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", name.strip())
+        # Collapse multiple underscores
+        sanitized = re.sub(r"_+", "_", sanitized)
+        # Remove leading/trailing underscores
+        sanitized = sanitized.strip("_")
         # Ensure starts with letter or underscore
         if sanitized and sanitized[0].isdigit():
             sanitized = "_" + sanitized

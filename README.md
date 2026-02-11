@@ -95,10 +95,10 @@ dcx load <source> [options]
 **Options:**
 | Option | Short | Description | Default |
 |--------|-------|-------------|---------|
-| `--dest` | `-d` | Destination table (schema.table or table) | Required* |
+| `--dest` | `-d` | Destination table (see Destination Resolution below) | Required* |
 | `--profile` | `-p` | Load profile name | - |
 | `--tag` | `-t` | Metadata tag as key=value (repeatable) | - |
-| `--strategy` | `-s` | Load strategy: overwrite, append, replace | overwrite |
+| `--strategy` | `-s` | Load strategy: overwrite, append, truncate, replace | overwrite |
 | `--format` | `-f` | File format: auto, single-column, csv, tsv | auto |
 | `--skip-header` | | Number of header lines to skip | 0 |
 | `--connection` | `-c` | Connection name | default |
@@ -107,10 +107,30 @@ dcx load <source> [options]
 | `--grant` | `-g` | Grant SELECT to role (repeatable) | - |
 | `--most-recent` | | Track most recent load with boolean column | false |
 | `--single-column` | | Store CSV as single JSON column instead of expanding | false |
+| `--sanitize` | | Sanitize column names (spaces→underscores, uppercase) | false |
 | `--audit` | | Log load to _dcx_load_history table | false |
 | `--dry-run` | | Show what would be done without executing | false |
 
 *Required unless using a profile with `dest` configured.
+
+**Destination Resolution:**
+
+The `--dest` option accepts table name, schema.table, or database.schema.table formats. The connection provides default database and schema:
+
+| Format | Behavior |
+|--------|----------|
+| `my_table` | Uses connection's database.schema.my_table |
+| `other_schema.my_table` | Prompts to confirm if schema differs from connection |
+| `other_db.other_schema.my_table` | Prompts to confirm if database or schema differs |
+
+```
+$ dcx load ./data.csv --dest STAGING.my_table
+
+Destination specifies schema 'STAGING' but connection uses 'RAW'
+Use schema 'STAGING' instead? [Y/n]: y
+
+Destination: ANALYTICS.STAGING.my_table
+```
 
 **Load Strategies:**
 
@@ -118,7 +138,8 @@ dcx load <source> [options]
 |----------|----------|
 | `overwrite` | Delete rows matching tags, then insert new rows |
 | `append` | Insert without deleting (preserves history) |
-| `replace` | Truncate entire table, then insert |
+| `truncate` | Truncate table, then insert (fast, keeps structure/grants) |
+| `replace` | Drop and recreate table (allows schema changes from new CSV) |
 
 **File Formats:**
 
@@ -131,7 +152,13 @@ dcx load <source> [options]
 
 **CSV Column Handling:**
 
-By default, CSV/TSV files create separate table columns from the header row. Use `--single-column` to store as a JSON object in a single VARIANT column instead.
+By default, CSV/TSV files create separate table columns from the header row, preserving original column names (including spaces and special characters). Use `--single-column` to store as a JSON object in a single VARIANT column instead.
+
+| Flag | Column names |
+|------|--------------|
+| (default) | `"SP Emplid"`, `"TA Term Code"` (original, quoted) |
+| `--sanitize` | `SP_EMPLID`, `TA_TERM_CODE` (uppercase, underscores) |
+| `--single-column` | Single `data` VARIANT column with JSON |
 
 **Examples:**
 
@@ -376,10 +403,11 @@ CREATE TABLE IF NOT EXISTS <dest> (
     _load_timestamp  TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),  -- When loaded
     is_most_recent   BOOLEAN DEFAULT TRUE,                       -- If --most-recent
     <tag_name>       VARCHAR,                                    -- One per --tag
-    "<CSV Column 1>" VARCHAR,                                    -- From CSV header
-    "<CSV Column 2>" VARCHAR,
+    "SP Emplid"      VARCHAR,                                    -- Original names (quoted)
+    "TA Term Code"   VARCHAR,
     ...
 );
+-- With --sanitize: SP_EMPLID, TA_TERM_CODE (no quotes needed)
 ```
 
 **For single-column files (or with `--single-column`):**
@@ -396,16 +424,16 @@ CREATE TABLE IF NOT EXISTS <dest> (
 **Querying CSV/TSV Data:**
 
 ```sql
--- CSV columns are created directly in the table
+-- Column names preserve original names from CSV header (use quotes)
 SELECT
-    "STUDENT_ID",
-    "FIRST_NAME",
-    "EMAIL"
+    "SP Emplid",
+    "TA Term Code",
+    "PD Preferred Email"
 FROM my_table;
 
--- Column names preserve original casing from CSV header
-SELECT * FROM my_table
-WHERE "STATUS" = 'ACTIVE';
+-- With --sanitize flag, column names are uppercase with underscores
+SELECT SP_EMPLID, TA_TERM_CODE, PD_PREFERRED_EMAIL
+FROM my_table;
 ```
 
 **Querying single-column data (with `--single-column`):**
