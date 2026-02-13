@@ -26,7 +26,7 @@ app = typer.Typer(no_args_is_help=True)
 console = Console()
 
 
-def _get_dbt_profiles_path() -> Path | None:
+def _get_dbt_profiles_path() -> Optional[Path]:
     """Get path to dbt profiles.yml."""
     # Check DBT_PROFILES_DIR env var first
     profiles_dir = os.environ.get("DBT_PROFILES_DIR")
@@ -43,7 +43,7 @@ def _get_dbt_profiles_path() -> Path | None:
     return None
 
 
-def _load_dbt_profiles() -> dict | None:
+def _load_dbt_profiles() -> Optional[dict]:
     """Load and parse dbt profiles.yml."""
     path = _get_dbt_profiles_path()
     if not path:
@@ -53,7 +53,7 @@ def _load_dbt_profiles() -> dict | None:
         return yaml.safe_load(f)
 
 
-def get_dbt_project_profile() -> tuple[str, str, dict] | None:
+def get_dbt_project_profile() -> Optional[tuple[str, str, dict]]:
     """
     Check for dbt_project.yml in current directory and return matching profile config.
     Returns (profile_name, target_name, config) or None if not found.

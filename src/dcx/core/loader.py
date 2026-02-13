@@ -8,7 +8,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Optional
 
 import snowflake.connector
 from rich.console import Console
@@ -32,12 +32,12 @@ class FileLoader:
         self,
         connection: dict[str, Any],
         dest_table: str,
-        tags: dict[str, str] | None = None,
+        tags: Optional[dict[str, str]] = None,
         strategy: str = "overwrite",
         file_format: str = "auto",
         create_table: bool = True,
         create_schema: bool = True,
-        grants: list[str] | None = None,
+        grants: Optional[list[str]] = None,
         track_most_recent: bool = False,
         skip_header: int = 0,
         expand_columns: bool = False,
@@ -60,7 +60,7 @@ class FileLoader:
         self._conn = None
         self._temp_dir = None
         self._stage_name = f"dcx_stage_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
-        self._csv_columns: list[str] | None = None  # Cached CSV column names
+        self._csv_columns: Optional[list[str]] = None  # Cached CSV column names
 
     def _get_conn(self):
         """Get or create Snowflake connection."""
@@ -569,7 +569,7 @@ class FileLoader:
         file_count: int = 0,
         deleted_count: int = 0,
         status: str = "success",
-        error_message: str | None = None,
+        error_message: Optional[str] = None,
     ) -> None:
         """Log a load operation to the audit table."""
         tags_json = json.dumps(self.tags) if self.tags else "{}"

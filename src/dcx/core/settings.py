@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -86,7 +86,7 @@ def list_connections() -> dict[str, Any]:
     return load_config()
 
 
-def get_connection(name: str | None = None) -> dict[str, Any] | None:
+def get_connection(name: Optional[str] = None) -> Optional[dict[str, Any]]:
     """Get a connection by name, or the default connection."""
     config = load_config()
 
@@ -127,7 +127,7 @@ def remove_profile(name: str) -> bool:
     return True
 
 
-def get_profile(name: str) -> dict[str, Any] | None:
+def get_profile(name: str) -> Optional[dict[str, Any]]:
     """Get a profile by name."""
     config = load_config()
     return config.get("profiles", {}).get(name)
@@ -139,7 +139,7 @@ def list_profiles() -> dict[str, Any]:
     return config.get("profiles", {})
 
 
-def test_connection(name: str | None = None) -> tuple[bool, str]:
+def test_connection(name: Optional[str] = None) -> tuple[bool, str]:
     """Test a connection. Returns (success, message)."""
     conn_config = get_connection(name)
 
