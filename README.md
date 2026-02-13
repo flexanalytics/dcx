@@ -4,7 +4,7 @@ A command-line tool for loading files into Snowflake with metadata tagging, form
 
 ## Features
 
-- **Flexible file loading**: Load single files, folders, or zip archives
+- **Flexible file loading**: Load single files, folders, zip archives, or tarballs (.tar, .tar.gz, .tgz)
 - **Format auto-detection**: Automatically handles single-column, CSV, and TSV files
 - **Metadata tagging**: Tag loads with key-value pairs for easy filtering
 - **Load strategies**: Overwrite by tags, append for history, or replace entire table
@@ -109,6 +109,7 @@ dcx load <source> [options]
 | `--single-column` | | Store CSV as single JSON column instead of expanding | false |
 | `--sanitize` | | Sanitize column names (spaces→underscores, uppercase) | false |
 | `--audit` | | Log load to _dcx_load_history table | false |
+| `--include` | `-i` | Only include files with these extensions (repeatable) | all files |
 | `--dry-run` | | Show what would be done without executing | false |
 
 *Required unless using a profile with `dest` configured.
@@ -180,6 +181,12 @@ dcx load ./data.zip --dest my_table --audit
 
 # Dry run to preview
 dcx load ./data.zip --dest my_table --dry-run
+
+# Filter files in archive by extension
+dcx load ./archive.zip --dest my_table --include txt
+
+# Load from tarball
+dcx load ./data.tar.gz --dest my_table --tag source=backup
 ```
 
 ---
