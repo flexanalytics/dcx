@@ -5,6 +5,7 @@ import json
 import re
 import tempfile
 import uuid
+import tarfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,6 +44,7 @@ class FileLoader:
         expand_columns: bool = False,
         audit: bool = False,
         sanitize_columns: bool = False,
+        include_extensions: Optional[list[str]] = None,
     ):
         self.connection = connection
         self.dest_table = dest_table
@@ -57,6 +59,13 @@ class FileLoader:
         self.expand_columns = expand_columns
         self.audit = audit
         self.sanitize_columns = sanitize_columns
+        # Normalize extensions to lowercase with leading dot
+        self.include_extensions = None
+        if include_extensions:
+            self.include_extensions = [
+                ext.lower() if ext.startswith(".") else f".{ext.lower()}"
+                for ext in include_extensions
+            ]
         self._conn = None
         self._temp_dir = None
         self._stage_name = f"dcx_stage_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
@@ -130,7 +139,12 @@ class FileLoader:
             # Resolve files to load
             files = list(self._iter_files(source))
             if not files:
-                raise ValueError(f"No files found in {source}")
+                if self.include_extensions:
+                    exts = ", ".join(self.include_extensions)
+                    msg = f"No {exts} files found in {source}. Check --include matches the files in your archive."
+                else:
+                    msg = f"No files found in {source}"
+                raise ValueError(msg)
 
             console.print(f"Found {len(files)} file(s) to load")
 
@@ -248,28 +262,49 @@ class FileLoader:
                 self._conn.close()
                 self._conn = None
 
+    def _should_include_file(self, file_path: Path) -> bool:
+        """Check if file should be included based on extension filter."""
+        if file_path.name.startswith("."):
+            return False
+        if self.include_extensions is None:
+            return True
+        return file_path.suffix.lower() in self.include_extensions
+
     def _iter_files(self, source: Path) -> list[tuple[Path, str]]:
         """Get list of files to load. Returns [(file_path, display_name), ...]."""
         files = []
 
         if source.is_file():
+            is_tar = source.suffix.lower() in (".tar", ".tgz", ".gz", ".bz2", ".xz")
+            is_tar = is_tar or source.name.lower().endswith((".tar.gz", ".tar.bz2", ".tar.xz"))
+
             if source.suffix.lower() == ".zip":
-                # Extract zip to temp dir (caller must handle cleanup)
+                # Extract zip to temp dir
                 self._temp_dir = tempfile.mkdtemp()
                 temp_path = Path(self._temp_dir)
                 with zipfile.ZipFile(source) as zf:
                     zf.extractall(temp_path)
 
-                # Collect extracted files
                 for file_path in sorted(temp_path.rglob("*")):
-                    if file_path.is_file() and not file_path.name.startswith("."):
+                    if file_path.is_file() and self._should_include_file(file_path):
+                        files.append((file_path, file_path.name))
+
+            elif is_tar and tarfile.is_tarfile(source):
+                # Extract tarball to temp dir
+                self._temp_dir = tempfile.mkdtemp()
+                temp_path = Path(self._temp_dir)
+                with tarfile.open(source) as tf:
+                    tf.extractall(temp_path)
+
+                for file_path in sorted(temp_path.rglob("*")):
+                    if file_path.is_file() and self._should_include_file(file_path):
                         files.append((file_path, file_path.name))
             else:
                 files.append((source, source.name))
 
         elif source.is_dir():
             for file_path in sorted(source.rglob("*")):
-                if file_path.is_file() and not file_path.name.startswith("."):
+                if file_path.is_file() and self._should_include_file(file_path):
                     files.append((file_path, file_path.name))
 
         return files

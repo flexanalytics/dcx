@@ -99,6 +99,10 @@ def load(
         bool,
         typer.Option("--audit", help="Log load to _dcx_load_history table"),
     ] = False,
+    include: Annotated[
+        Optional[list[str]],
+        typer.Option("--include", "-i", help="Only include files with these extensions (e.g., --include txt)"),
+    ] = None,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="Show what would be done without executing"),
@@ -302,6 +306,7 @@ def load(
         expand_columns=not single_column,
         audit=audit,
         sanitize_columns=sanitize,
+        include_extensions=include,
     )
 
     try:
@@ -327,6 +332,7 @@ def load(
                 expand_columns=not single_column,
                 audit=audit,
                 sanitize_columns=sanitize,
+                include_extensions=include,
             )
             result = loader.load(source)
             console.print(f"\n[green]Loaded {result['rows']:,} rows from {result['files']} file(s)[/green]")
