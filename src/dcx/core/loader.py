@@ -45,6 +45,7 @@ class FileLoader:
         audit: bool = False,
         sanitize_columns: bool = False,
         include_extensions: Optional[list[str]] = None,
+        encoding: str = "auto",
     ):
         self.connection = connection
         self.dest_table = dest_table
@@ -59,6 +60,9 @@ class FileLoader:
         self.expand_columns = expand_columns
         self.audit = audit
         self.sanitize_columns = sanitize_columns
+        self._encoding_arg = encoding  # Store original arg for auto-detect
+        self.encoding = "utf-8"  # Will be updated by _detect_encoding if auto
+        self._snowflake_encoding = "UTF8"
         # Normalize extensions to lowercase with leading dot
         self.include_extensions = None
         if include_extensions:
@@ -147,6 +151,10 @@ class FileLoader:
                 raise ValueError(msg)
 
             console.print(f"Found {len(files)} file(s) to load")
+
+            # Detect encoding from first file
+            first_file, _ = files[0]
+            self._detect_encoding(first_file)
 
             # If expand_columns, detect columns from first file
             if self.expand_columns and files:
@@ -432,9 +440,40 @@ class FileLoader:
         else:
             return "single-column"
 
+    def _set_encoding(self, encoding: str) -> None:
+        """Set encoding and update Snowflake encoding name."""
+        self.encoding = encoding
+        self._snowflake_encoding = {
+            "utf-8": "UTF8",
+            "utf8": "UTF8",
+            "iso-8859-1": "ISO88591",
+            "latin-1": "ISO88591",
+            "latin1": "ISO88591",
+            "windows-1252": "WINDOWS1252",
+            "cp1252": "WINDOWS1252",
+        }.get(encoding.lower(), encoding.upper())
+
+    def _detect_encoding(self, file_path: Path) -> str:
+        """Detect file encoding. Try UTF-8 first, fall back to ISO-8859-1."""
+        if self._encoding_arg != "auto":
+            self._set_encoding(self._encoding_arg)
+            return self.encoding
+
+        # Try UTF-8 first
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                f.read(8192)  # Read a sample
+            self._set_encoding("utf-8")
+            return "utf-8"
+        except UnicodeDecodeError:
+            # Fall back to ISO-8859-1 (accepts any byte sequence)
+            self._set_encoding("iso-8859-1")
+            console.print(f"[yellow]Detected non-UTF8 encoding, using ISO-8859-1[/yellow]")
+            return "iso-8859-1"
+
     def _get_csv_headers(self, file_path: Path, delimiter: str) -> list[str]:
         """Read CSV header row to get column names."""
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, "r", encoding=self.encoding) as f:
             first_line = f.readline().strip()
             if not first_line:
                 return []
@@ -498,6 +537,7 @@ class FileLoader:
                 SKIP_HEADER = {self.skip_header}
                 FIELD_OPTIONALLY_ENCLOSED_BY = NONE
                 ESCAPE_UNENCLOSED_FIELD = NONE
+                ENCODING = '{self._snowflake_encoding}'
             )
             """
         elif self.expand_columns and self._csv_columns:
@@ -516,6 +556,7 @@ class FileLoader:
                 SKIP_HEADER = {skip_header}
                 FIELD_OPTIONALLY_ENCLOSED_BY = '"'
                 ESCAPE_UNENCLOSED_FIELD = NONE
+                ENCODING = '{self._snowflake_encoding}'
             )
             """
         else:
@@ -546,6 +587,7 @@ class FileLoader:
                 SKIP_HEADER = {skip_header}
                 FIELD_OPTIONALLY_ENCLOSED_BY = '"'
                 ESCAPE_UNENCLOSED_FIELD = NONE
+                ENCODING = '{self._snowflake_encoding}'
             )
             """
 

@@ -103,6 +103,10 @@ def load(
         Optional[list[str]],
         typer.Option("--include", "-i", help="Only include files with these extensions (e.g., --include txt)"),
     ] = None,
+    encoding: Annotated[
+        str,
+        typer.Option("--encoding", "-e", help="File encoding (auto, utf-8, iso-8859-1, windows-1252)"),
+    ] = "auto",
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="Show what would be done without executing"),
@@ -307,6 +311,7 @@ def load(
         audit=audit,
         sanitize_columns=sanitize,
         include_extensions=include,
+        encoding=encoding,
     )
 
     try:
@@ -333,6 +338,7 @@ def load(
                 audit=audit,
                 sanitize_columns=sanitize,
                 include_extensions=include,
+                encoding=encoding,
             )
             result = loader.load(source)
             console.print(f"\n[green]Loaded {result['rows']:,} rows from {result['files']} file(s)[/green]")
