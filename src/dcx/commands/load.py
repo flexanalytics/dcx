@@ -1,5 +1,6 @@
 """dcx load - Load files into Snowflake."""
 
+import re
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Optional
@@ -12,6 +13,17 @@ from dcx.core.loader import FileLoader, SchemaNotFoundError
 from dcx.core.settings import get_connection, get_profile
 
 console = Console()
+
+
+def _table_name_from_file(filename: str) -> str:
+    """Derive table name from filename (without extension, sanitized)."""
+    # Remove extension
+    name = Path(filename).stem
+    # Sanitize: replace non-alphanumeric with underscore, collapse, strip
+    name = re.sub(r"[^a-zA-Z0-9_]", "_", name)
+    name = re.sub(r"_+", "_", name)
+    name = name.strip("_")
+    return name.lower() or "data"
 
 
 class Strategy(str, Enum):
@@ -107,6 +119,10 @@ def load(
         str,
         typer.Option("--encoding", "-e", help="File encoding (auto, utf-8, iso-8859-1, windows-1252)"),
     ] = "auto",
+    per_file: Annotated[
+        bool,
+        typer.Option("--per-file", help="Load each file to its own table (table name from filename)"),
+    ] = False,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="Show what would be done without executing"),
@@ -137,8 +153,8 @@ def load(
 
     # Merge dest from profile (CLI takes precedence)
     final_dest = dest or profile_config.get("dest")
-    if not final_dest:
-        console.print("[red]No destination specified. Use --dest or --profile[/red]")
+    if not final_dest and not per_file:
+        console.print("[red]No destination specified. Use --dest or --profile (or --per-file)[/red]")
         raise typer.Exit(1)
 
     # Merge connection from profile
@@ -234,57 +250,67 @@ def load(
     conn_db = conn_config.get("database", "")
     conn_schema = conn_config.get("schema", "")
 
-    dest_parts = final_dest.split(".")
-    if len(dest_parts) == 1:
-        # Just table name - use connection's db/schema
-        table_name = final_dest
-        db = conn_db
-        schema = conn_schema
-    elif len(dest_parts) == 2:
-        # schema.table - confirm override
-        dest_schema, table_name = dest_parts
-        if dest_schema.upper() != conn_schema.upper():
-            console.print(f"\n[yellow]Destination specifies schema '{dest_schema}' but connection uses '{conn_schema}'[/yellow]")
-            if typer.confirm(f"Use schema '{dest_schema}' instead?", default=True):
-                schema = dest_schema
+    if final_dest:
+        dest_parts = final_dest.split(".")
+        if len(dest_parts) == 1:
+            # Just table name - use connection's db/schema
+            table_name = final_dest
+            db = conn_db
+            schema = conn_schema
+        elif len(dest_parts) == 2:
+            # schema.table - confirm override
+            dest_schema, table_name = dest_parts
+            if dest_schema.upper() != conn_schema.upper():
+                console.print(f"\n[yellow]Destination specifies schema '{dest_schema}' but connection uses '{conn_schema}'[/yellow]")
+                if typer.confirm(f"Use schema '{dest_schema}' instead?", default=True):
+                    schema = dest_schema
+                else:
+                    schema = conn_schema
             else:
-                schema = conn_schema
+                schema = dest_schema
+            db = conn_db
         else:
-            schema = dest_schema
-        db = conn_db
-    else:
-        # db.schema.table - confirm override
-        dest_db = dest_parts[0]
-        dest_schema = dest_parts[-2]
-        table_name = dest_parts[-1]
+            # db.schema.table - confirm override
+            dest_db = dest_parts[0]
+            dest_schema = dest_parts[-2]
+            table_name = dest_parts[-1]
 
-        overrides = []
-        if dest_db.upper() != conn_db.upper():
-            overrides.append(f"database '{dest_db}' (connection: '{conn_db}')")
-        if dest_schema.upper() != conn_schema.upper():
-            overrides.append(f"schema '{dest_schema}' (connection: '{conn_schema}')")
+            overrides = []
+            if dest_db.upper() != conn_db.upper():
+                overrides.append(f"database '{dest_db}' (connection: '{conn_db}')")
+            if dest_schema.upper() != conn_schema.upper():
+                overrides.append(f"schema '{dest_schema}' (connection: '{conn_schema}')")
 
-        if overrides:
-            console.print(f"\n[yellow]Destination specifies: {', '.join(overrides)}[/yellow]")
-            if typer.confirm("Use destination's database/schema?", default=True):
+            if overrides:
+                console.print(f"\n[yellow]Destination specifies: {', '.join(overrides)}[/yellow]")
+                if typer.confirm("Use destination's database/schema?", default=True):
+                    db = dest_db
+                    schema = dest_schema
+                else:
+                    db = conn_db
+                    schema = conn_schema
+            else:
                 db = dest_db
                 schema = dest_schema
-            else:
-                db = conn_db
-                schema = conn_schema
-        else:
-            db = dest_db
-            schema = dest_schema
 
-    # Build full path for display
-    full_dest = ".".join(filter(None, [db, schema, table_name]))
+        # Build full path for display
+        full_dest = ".".join(filter(None, [db, schema, table_name]))
+    else:
+        # per-file mode without --dest: use connection's db/schema
+        db = conn_db
+        schema = conn_schema
+        table_name = None
+        full_dest = None
 
     # Update connection config with resolved db/schema (may have been overridden by dest)
     conn_config = {**conn_config, "database": db, "schema": schema}
 
     # Show plan
     console.print(f"\n[bold]Source:[/bold] {source}")
-    console.print(f"[bold]Destination:[/bold] {full_dest}")
+    if per_file:
+        console.print(f"[bold]Destination:[/bold] {db}.{schema}.<filename> (per-file mode)")
+    else:
+        console.print(f"[bold]Destination:[/bold] {full_dest}")
     console.print(f"[bold]Connection:[/bold] {conn_display} ({conn_config.get('account')})")
     console.print(f"[bold]Strategy:[/bold] {final_strategy.value}")
     if tags:
@@ -295,7 +321,61 @@ def load(
         console.print("[yellow]Dry run - no changes made[/yellow]")
         return
 
-    # Execute load
+    # Per-file mode: load each file to its own table
+    if per_file:
+        # Use a temp loader just to list files
+        temp_loader = FileLoader(
+            connection=conn_config,
+            dest_table="_temp",
+            include_extensions=include,
+        )
+        files = list(temp_loader._iter_files(source))
+        if not files:
+            if include:
+                exts = ", ".join(f".{e}" for e in include)
+                console.print(f"[red]No {exts} files found in {source}[/red]")
+            else:
+                console.print(f"[red]No files found in {source}[/red]")
+            raise typer.Exit(1)
+
+        console.print(f"Loading {len(files)} file(s) to separate tables:\n")
+        total_rows = 0
+        total_files = 0
+
+        for file_path, file_name in files:
+            file_table_name = _table_name_from_file(file_name)
+            console.print(f"  {file_name} → [cyan]{file_table_name}[/cyan]")
+
+            loader = FileLoader(
+                connection=conn_config,
+                dest_table=file_table_name,
+                tags=tags,
+                strategy=final_strategy.value,
+                file_format=format.value,
+                create_table=create_table,
+                create_schema=create_schema,
+                grants=final_grants,
+                track_most_recent=final_most_recent,
+                skip_header=skip_header,
+                expand_columns=not single_column,
+                audit=audit,
+                sanitize_columns=sanitize,
+                encoding=encoding,
+            )
+
+            try:
+                result = loader.load(file_path)
+                total_rows += result["rows"]
+                total_files += 1
+                console.print(f"    [green]✓ {result['rows']:,} rows[/green]")
+            except Exception as e:
+                console.print(f"    [red]✗ {e}[/red]")
+                raise typer.Exit(1)
+
+        console.print(f"\n[green]Loaded {total_rows:,} rows across {total_files} table(s)[/green]")
+        return
+
+    # Standard mode: load all files to single table
     loader = FileLoader(
         connection=conn_config,
         dest_table=table_name,

@@ -111,6 +111,7 @@ dcx load <source> [options]
 | `--audit` | | Log load to _dcx_load_history table | false |
 | `--include` | `-i` | Only include files with these extensions (repeatable) | all files |
 | `--encoding` | `-e` | File encoding (auto-detects, or specify utf-8, iso-8859-1, etc.) | auto |
+| `--per-file` | | Load each file to its own table (table name from filename) | false |
 | `--dry-run` | | Show what would be done without executing | false |
 
 *Required unless using a profile with `dest` configured.
@@ -191,6 +192,9 @@ dcx load ./data.tar.gz --dest my_table --tag source=backup
 
 # Encoding auto-detects (UTF-8 with ISO-8859-1 fallback), or override:
 dcx load ./legacy_data.zip --dest my_table --encoding windows-1252
+
+# Load each file to its own table (STUDENT.txt → student, ENROLLMENT.txt → enrollment)
+dcx load ./CENSUS_2258.zip --per-file --include txt
 ```
 
 ---
